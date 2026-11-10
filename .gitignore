@@ -1,0 +1,12 @@
+# 忽略编译生成的文件夹
+build/
+
+# 忽略数据文件夹里的大视频文件（但是保留文件夹结构）
+data/raw/*.mp4
+data/raw/*.avi
+data/raw/*.h265
+data/camera/*
+
+# 忽略系统或编辑器的临时文件
+.vscode/
+.DS_Store
