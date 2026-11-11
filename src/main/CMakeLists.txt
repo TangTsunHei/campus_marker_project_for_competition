@@ -15,7 +15,7 @@ find_package(OpenCV REQUIRED)
 message(STATUS "OpenCV version: ${OpenCV_VERSION}")
 
 # 生成可执行文件（源文件就是当前目录下的 main.cpp）
-add_executable(armor_detect main.cpp)
+add_executable(armor_detect main.cpp comm/uart.cpp)
 
 # 链接 OpenCV
 target_include_directories(armor_detect PRIVATE ${OpenCV_INCLUDE_DIRS})

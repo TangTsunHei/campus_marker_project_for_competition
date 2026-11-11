@@ -15,6 +15,12 @@
 #include <vector>
 #include <opencv2/calib3d.hpp>
 
+#include "comm/uart.hpp"
+#include "comm/protocol.hpp"
+
+// 全局或成员变量
+SerialPort serial("/dev/ttyS0", 115200);
+
 namespace fs = std::filesystem;
 
 namespace {
@@ -130,57 +136,87 @@ FrameResult processFrame(const cv::Mat& frame) {
 
     // 8. 绘制结果
     cv::Mat annotated = frame.clone();
+
+    //准备发送给电控的数据结构
+    VisionToControl tx_data;
+    tx_data.header[0] = 0xAA;
+    tx_data.header[1] = 0x55;
+
     if (detected) {
+        // 1. 画框
         for (int k = 0; k < 4; ++k) {
             cv::line(annotated, pixelPoint(corners[k]), pixelPoint(corners[(k + 1) % 4]),
                      cv::Scalar(0, 255, 0), 2, cv::LINE_AA);
-            cv::circle(annotated, pixelPoint(corners[k]), 5,
-                       cv::Scalar(0, 0, 255), cv::FILLED, cv::LINE_AA);
+            cv::circle(annotated, pixelPoint(corners[k]), 5, cv::Scalar(0, 0, 255), cv::FILLED, cv::LINE_AA);
         }
-        cv::putText(annotated, "Marker Detected",
-                    pixelPoint(corners[0]) + cv::Point(0, -10),
+        cv::putText(annotated, "Marker Detected", pixelPoint(corners[0]) + cv::Point(0, -10),
                     cv::FONT_HERSHEY_SIMPLEX, 0.8, cv::Scalar(0, 255, 0), 2, cv::LINE_AA);
         result.armor_count = 1;
-    } else {
-        cv::putText(annotated, "Not Detected",
-                    cv::Point(20, 40), cv::FONT_HERSHEY_SIMPLEX,
-                    1.0, cv::Scalar(0, 0, 255), 2, cv::LINE_AA);
-        result.armor_count = 0;
-    }
-            // ================= 新增：PnP 位姿估计 =================
-         //将 std::array 转换为 std::vector（因为solvePnp接收的是vector）
+
+        // 2. PnP 位姿估计（必须放在 if(detected) 里面！）
         std::vector<cv::Point2f> corners_vec(corners.begin(), corners.end());
-        cv::Mat rvec, tvec;//对应旋转(描述装甲板相对于相机的姿态（比如向左倾斜 15 度）)与平移(描述装甲板中心在相机坐标系下的位置)
-        // 调用 solvePnP
+        cv::Mat rvec, tvec;
         bool pnp_success = cv::solvePnP(object_points, corners_vec, camera_matrix, dist_coeffs, rvec, tvec);
         
         if (pnp_success) {
-            // 合理性检查，如果距离小于100mm或大于5000mm，视为误检，不画坐标轴
             double z_distance = std::abs(tvec.at<double>(2,0));
             if (z_distance > 100 && z_distance < 5000){
-            // 定义 3D 坐标轴端点：原点 + X轴(50mm) + Y轴(50mm) + Z轴(50mm)
-            std::vector<cv::Point3f> axis_points = {
-                {0, 0, 0},      // 原点
-                {50, 0, 0},     // X 轴（红色）
-                {0, 50, 0},     // Y 轴（绿色）
-                {0, 0, 50}      // Z 轴（蓝色）
-            };
-            
-            // 将 3D 点投影回 2D 图像
-            std::vector<cv::Point2f> image_points_axis;
-            cv::projectPoints(axis_points, rvec, tvec, camera_matrix, dist_coeffs, image_points_axis);
-            
-            // 画出坐标轴 (BGR颜色)
-            cv::line(annotated, pixelPoint(image_points_axis[0]), pixelPoint(image_points_axis[1]), cv::Scalar(0, 0, 255), 3); // X轴 红
-            cv::line(annotated, pixelPoint(image_points_axis[0]), pixelPoint(image_points_axis[2]), cv::Scalar(0, 255, 0), 3); // Y轴 绿
-            cv::line(annotated, pixelPoint(image_points_axis[0]), pixelPoint(image_points_axis[3]), cv::Scalar(255, 0, 0), 3); // Z轴 蓝
-            
-            // （可选）在图像上写出距离
-            std::string dist_str = "Z: " + std::to_string(tvec.at<double>(2,0)).substr(0, 5) + "mm";
-            cv::putText(annotated, dist_str, pixelPoint(corners[0]) + cv::Point(0, 20), 
-                        cv::FONT_HERSHEY_SIMPLEX, 0.6, cv::Scalar(255, 255, 0), 2);
+                // 画坐标轴
+                std::vector<cv::Point3f> axis_points = {{0, 0, 0}, {50, 0, 0}, {0, 50, 0}, {0, 0, 50}};
+                std::vector<cv::Point2f> image_points_axis;
+                cv::projectPoints(axis_points, rvec, tvec, camera_matrix, dist_coeffs, image_points_axis);
+                
+                cv::line(annotated, pixelPoint(image_points_axis[0]), pixelPoint(image_points_axis[1]), cv::Scalar(0, 0, 255), 3);
+                cv::line(annotated, pixelPoint(image_points_axis[0]), pixelPoint(image_points_axis[2]), cv::Scalar(0, 255, 0), 3);
+                cv::line(annotated, pixelPoint(image_points_axis[0]), pixelPoint(image_points_axis[3]), cv::Scalar(255, 0, 0), 3);
+                
+                std::string dist_str = "Z: " + std::to_string(tvec.at<double>(2,0)).substr(0, 5) + "mm";
+                cv::putText(annotated, dist_str, pixelPoint(corners[0]) + cv::Point(0, 20), 
+                            cv::FONT_HERSHEY_SIMPLEX, 0.6, cv::Scalar(255, 255, 0), 2);
+
+                // ===== 新增：计算偏差并发送给电控 =====
+                tx_data.is_detected = 1;
+                tx_data.x_err = tvec.at<double>(0, 0); // 横向偏差 (mm)
+                tx_data.y_err = tvec.at<double>(1, 0); // 纵向偏差 (mm)
+                tx_data.z_dist = tvec.at<double>(2, 0); // 距离 (mm)
+                
+                // 计算偏航角 Yaw (将旋转向量转为旋转矩阵，再求欧拉角)
+                cv::Mat R;
+                cv::Rodrigues(rvec, R);
+                tx_data.yaw = std::atan2(R.at<double>(0, 2), R.at<double>(2, 2)) * (180.0 / CV_PI);
+                
+                // 计算校验和
+                uint8_t *p = (uint8_t*)&tx_data;
+                tx_data.checksum = 0;
+                for (size_t i = 0; i < sizeof(VisionToControl) - 1; ++i) {
+                    tx_data.checksum += p[i];
+                }
+                // 发送数据
+                serial.sendData(tx_data);
+            }
         }
+    } 
+    // ================= 核心修改位置：如果没识别到目标 =================
+    else {
+        cv::putText(annotated, "Not Detected", cv::Point(20, 40), cv::FONT_HERSHEY_SIMPLEX,
+                    1.0, cv::Scalar(0, 0, 255), 2, cv::LINE_AA);
+        result.armor_count = 0;
+
+        // ===== 新增：告诉电控目标丢失 =====
+        tx_data.is_detected = 0;
+        tx_data.x_err = 0;
+        tx_data.y_err = 0;
+        tx_data.z_dist = 0;
+        tx_data.yaw = 0;
+        
+        uint8_t *p = (uint8_t*)&tx_data;
+        tx_data.checksum = 0;
+        for (size_t i = 0; i < sizeof(VisionToControl) - 1; ++i) {
+            tx_data.checksum += p[i];
+        }
+        serial.sendData(tx_data);
     }
+
     result.annotated = annotated;
     return result;
 }
