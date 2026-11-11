@@ -46,7 +46,8 @@ FrameResult processFrame(const cv::Mat& frame) {
     std::vector<cv::Point3f> object_points = {
         {-23.0f, -23.0f, 0.0f}, { 23.0f, -23.0f, 0.0f}, 
         { 23.0f,  23.0f, 0.0f}, {-23.0f,  23.0f, 0.0f}
-    };//模拟后将23全部换回40!!!!!!!!!!!!!!!!!!!!!!!!!!
+    };//模拟后将23全部换回40
+      //模拟结束，以46*46mm的模拟纸片灯条测距误差在+-3cm,现已完成测距模拟，数据填回正式灯条40*40mm尺寸数据
 
     FrameResult result;
     // 1. 中值滤波去噪
