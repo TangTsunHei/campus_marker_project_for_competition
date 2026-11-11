@@ -7,6 +7,8 @@ data/raw/*.avi
 data/raw/*.h265
 data/camera/*
 
+*.mp4
+*.avi
 # 忽略系统或编辑器的临时文件
 .vscode/
 .DS_Store
