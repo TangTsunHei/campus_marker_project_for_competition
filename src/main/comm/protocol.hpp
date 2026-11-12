@@ -1,5 +1,6 @@
 #pragma once
 #include <stdint.h>
+#include <cstddef>
 
 #pragma pack(1)
 struct VisionToControl {
@@ -13,3 +14,12 @@ struct VisionToControl {
     uint8_t  checksum;
 };
 #pragma pack()
+// 供电控直接调用的校验函数，确保与视觉端计算逻辑一致
+inline uint8_t calculate_checksum(const VisionToControl& data) {
+    uint8_t sum = 0;
+    const uint8_t* p = reinterpret_cast<const uint8_t*>(&data);
+    for (size_t i = 0; i < sizeof(VisionToControl) - 1; ++i) {
+        sum += p[i];
+    }
+    return sum;
+}

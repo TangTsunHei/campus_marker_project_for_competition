@@ -14,8 +14,11 @@ find_package(OpenCV REQUIRED)
 
 message(STATUS "OpenCV version: ${OpenCV_VERSION}")
 
-# 生成可执行文件（源文件就是当前目录下的 main.cpp）
-add_executable(armor_detect main.cpp comm/uart.cpp)
+# 生成可执行文件
+add_executable(armor_detect 
+    main_pc.cpp 
+    vision_core.cpp 
+    comm/uart.cpp)
 
 # 链接 OpenCV
 target_include_directories(armor_detect PRIVATE ${OpenCV_INCLUDE_DIRS})
@@ -25,3 +28,5 @@ target_link_libraries(armor_detect PRIVATE ${OpenCV_LIBS})
 add_executable(calibrate_app calibrate.cpp)
 target_include_directories(calibrate_app PRIVATE ${OpenCV_INCLUDE_DIRS})
 target_link_libraries(calibrate_app PRIVATE ${OpenCV_LIBS})
+
+# 以上的cmakelist内容完全用于电脑端测试，不适用于相机端，交叉编译到相机前一定要改！！！！！

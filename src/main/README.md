@@ -1,22 +1,17 @@
-# README.md（包含从配置、编译到运行的完整命令）
-
-# 环境配置：
-
-本次作业在Linux环境中测试并通过：
-Ubuntu 24.04 （在wsl ubuntu24.04上已验证）
-GCC 13.3.0  （在wsl ubuntu24.04上已验证）
-CMake >= 3.22  （在wsl ubuntu24.04上已验证，为3.28.3）
-OpenCV 4.6.0  （在wsl ubuntu24.04上已验证）
-C++17
-
-
-# 依赖安装方法:
-在全新环境中，请先执行以下命令安装必要依赖：
-bash:
-sudo apt update
-sudo apt install build-essential cmake libopencv-dev
-
-# 相机标定：
-用maixcam pro拍摄了一段1:42的标定板视频，并用该视频完成了相机标定任务（获得相机内参和畸变系数）
-这些获得的参数将被定死，一直用到校内赛结束，！！！注意：相机标定后不能改变相机分辨率和焦距，否则标定参数将失效
-
+# 注意：
+为了方便调试，写了两个main文件：main_pc.cpp&main_cam.cpp,一个在电脑端测试，一个在相机上测试
+# 如何灵活切换两个main.cpp:
+在 CMakeLists.txt 中灵活切换:
+打开CMakeLists.txt找到add_executable
+# 在电脑上测试时
+add_executable(armor_pc 
+    main_pc.cpp 
+    vision_core.cpp 
+    comm/uart.cpp
+)
+# 当你要交叉编译并传到相机上时（MaixCam端）：
+add_executable(armor_cam 
+    main_cam.cpp 
+    vision_core.cpp 
+    comm/uart.cpp
+)
