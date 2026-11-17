@@ -14,6 +14,31 @@ cv::Point pixelPoint(const cv::Point2f& point) {
     return {cvRound(point.x), cvRound(point.y)};
 }
 
+// ================== 坐标转换参数 (请根据实车物理尺寸修改) ==================
+/*原点：战车底盘的旋转中心（或者升降投放结构的几何中心）。
+X轴:车体正右方
+Y轴:车体正下方（沿用视觉习惯）
+Z轴:车体正前方*/
+const float CAM_OFFSET_X = 0.0f;    // 相机在车体坐标系下的 X 偏移 (mm)
+const float CAM_OFFSET_Y = 0.0f;    // 相机在车体坐标系下的 Y 偏移 (mm)
+const float CAM_OFFSET_Z = 0.0f;    // 相机在车体坐标系下的 Z 偏移 (mm)
+const float CAM_YAW_DEGREE = 0.0f;  // 相机安装的偏航角 (度)（向右偏为正，向左偏为负）。
+
+// 将相机坐标系下的 (x, y, z) 转换到“投放结构中心”坐标系
+void transformToDropMechanism(float& x, float& y, float& z) {
+    float theta = -CAM_YAW_DEGREE * (CV_PI / 180.0f); // 弧度
+    float cos_t = std::cos(theta);
+    float sin_t = std::sin(theta);
+
+    float x_rot = x * cos_t + z * sin_t;
+    float z_rot = -x * sin_t + z * cos_t;
+
+    x = x_rot + CAM_OFFSET_X;
+    y = y + CAM_OFFSET_Y;
+    z = z_rot + CAM_OFFSET_Z;
+}
+// ==============================================================================
+
 // 内部函数：找兑换框
 bool detectExchangeBoard(cv::Mat& frame, VisionToControl& tx_data, std::array<cv::Point2f, 4>& corners) {
     cv::Mat denoised, gray, binary, morphology;
@@ -65,6 +90,7 @@ bool detectExchangeBoard(cv::Mat& frame, VisionToControl& tx_data, std::array<cv
 
     cv::Mat camera_matrix = (cv::Mat_<double>(3, 3) << 1820.23, 0, 1236.55, 0, 1773.26, 916.15, 0, 0, 1);
     cv::Mat dist_coeffs = (cv::Mat_<double>(1, 5) << -0.119, 1.043, -0.007, -0.001, -3.627);
+    // 【上车前注意】：把 23.0f 改回 40.0f
     std::vector<cv::Point3f> object_points = {{-23.0f, -23.0f, 0}, {23.0f, -23.0f, 0}, {23.0f, 23.0f, 0}, {-23.0f, 23.0f, 0}};
     
     std::vector<cv::Point2f> corners_vec(corners.begin(), corners.end());
@@ -72,11 +98,25 @@ bool detectExchangeBoard(cv::Mat& frame, VisionToControl& tx_data, std::array<cv
     if (cv::solvePnP(object_points, corners_vec, camera_matrix, dist_coeffs, rvec, tvec)) {
         if (std::abs(tvec.at<double>(2,0)) > 100) {
             tx_data.target_type = 1;
-            tx_data.x_err = tvec.at<double>(0, 0);
-            tx_data.y_err = tvec.at<double>(1, 0);
-            tx_data.z_dist = tvec.at<double>(2, 0);
+            
+            // 1. 提取原始相机坐标
+            float cam_x = tvec.at<double>(0, 0);
+            float cam_y = tvec.at<double>(1, 0);
+            float cam_z = tvec.at<double>(2, 0);
+
+            // ================= 新增：坐标变换 =================
+            transformToDropMechanism(cam_x, cam_y, cam_z);
+            // ==================================================
+
+            tx_data.x_err = cam_x;
+            tx_data.y_err = cam_y;
+            tx_data.z_dist = cam_z;
+            
             cv::Mat R; cv::Rodrigues(rvec, R);
-            tx_data.yaw = std::atan2(R.at<double>(0, 2), R.at<double>(2, 2)) * (180.0 / CV_PI);
+            float raw_yaw = std::atan2(R.at<double>(0, 2), R.at<double>(2, 2)) * (180.0 / CV_PI);
+            // 【新增】：补偿相机的物理安装偏角
+            tx_data.yaw = raw_yaw - CAM_YAW_DEGREE; 
+            
             return true;
         }
     }
@@ -97,6 +137,7 @@ bool detectExitTag(cv::Mat& frame, VisionToControl& tx_data) {
         cv::Point2f center(0, 0);
         for (const auto& p : corners[0]) center += p;
         center /= 4.0f;
+        // 这里发送的是基于图像中心的像素偏差，电控只做对正，不需要物理毫米距离
         tx_data.x_err = center.x - (frame.cols / 2.0f);
         tx_data.y_err = center.y - (frame.rows / 2.0f);
         tx_data.z_dist = 100000.0f / cv::contourArea(corners[0]);
@@ -146,11 +187,12 @@ FrameResult processFrame(cv::Mat& frame, SerialPort& serial, int current_mode) {
         result.armor_count = 1;
         tx_data.is_detected = 1;
 
-        // 计算速度 (只针对兑换框)
+        // 计算速度 (只针对兑换框，因为 Tag 是静止的)
         if (tx_data.target_type == 1) {
             auto current_time = std::chrono::high_resolution_clock::now();
             double dt = std::chrono::duration<double>(current_time - last_time).count();
             if (has_last_x && dt > 0.005 && dt < 0.5) {
+                // 注意：这里算的是转换到车体坐标系后的相对速度
                 double instant_v_x = (tx_data.x_err - last_x_err) / dt;
                 if (instant_v_x * filtered_v_x < 0 && std::abs(instant_v_x) > 100.0) {
                     filtered_v_x = instant_v_x; 
@@ -173,6 +215,21 @@ FrameResult processFrame(cv::Mat& frame, SerialPort& serial, int current_mode) {
             for (int k = 0; k < 4; ++k) {
                 cv::line(debug_frame, pixelPoint(corners[k] * scale), pixelPoint(corners[(k+1)%4] * scale), cv::Scalar(0, 255, 0), 1, cv::LINE_AA);
             }
+        // ================= 【新增：Yaw值可视化】 =================
+            char yaw_text[50];
+            // 格式化字符串，保留2位小数
+            snprintf(yaw_text, sizeof(yaw_text), "Yaw: %.2f deg", tx_data.yaw);
+            
+            // 在画面左上角（坐标 20, 40）用黄色（0, 255, 255）显示
+            cv::putText(debug_frame, yaw_text, cv::Point(20, 40), 
+                        cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(0, 255, 255), 2);
+            
+            // （可选）如果 yaw 偏离较大，用红色提示，方便你测试航向保持是否生效
+            if (std::abs(tx_data.yaw) > 3.0f) {
+                cv::putText(debug_frame, "WARNING: Yaw Drift!", cv::Point(20, 70), 
+                            cv::FONT_HERSHEY_SIMPLEX, 0.6, cv::Scalar(0, 0, 255), 2);
+            }
+            // ========================================================    
         } else if (tx_data.target_type == 2) {
             cv::putText(debug_frame, "EXIT TAG FOUND", cv::Point(20, 40), cv::FONT_HERSHEY_SIMPLEX, 0.8, cv::Scalar(255, 0, 0), 2);
         }
