@@ -56,9 +56,31 @@ SerialPort::~SerialPort() {
 bool SerialPort::isOpen() const { return fd != -1; }
 
 bool SerialPort::sendData(const VisionToControl& data) {
-    if (fd == -1) return false;
+    // =========================================================
+    // 核心调试打印：增加 v_x，并保持终端输出对齐
+    // =========================================================
+    printf("[TX] Det:%d | X:%7.2f mm | Y:%7.2f mm | Z:%7.2f mm | Yaw:%7.2f deg | v_x:%8.2f mm/s\n", 
+           data.is_detected, data.x_err, data.y_err, data.z_dist, data.yaw, data.v_x);
+    fflush(stdout); // 强制刷新输出缓冲区，防止终端卡顿或丢行
+
+    // 如果串口没打开（比如在电脑上跑测试视频），打印完直接返回，防止段错误
+    if (fd == -1) {
+        return false; 
+    }
+
+    // 串口发送（写入二进制数据）
     ssize_t bytes_written = write(fd, (const void*)&data, sizeof(VisionToControl));
-    return bytes_written == sizeof(VisionToControl);
+    
+    if (bytes_written == -1) {
+        std::cerr << "[错误] 串口发送失败！" << std::endl;
+        return false;
+    } else if (bytes_written != sizeof(VisionToControl)) {
+        std::cerr << "[警告] 串口发送不完整，期望发送 " << sizeof(VisionToControl) 
+                  << " 字节，实际发送 " << bytes_written << " 字节" << std::endl;
+        return false;
+    }
+
+    return true;
 }
 
 bool SerialPort::receiveData(ControlToVision& cmd) {

@@ -215,21 +215,31 @@ FrameResult processFrame(cv::Mat& frame, SerialPort& serial, int current_mode) {
             for (int k = 0; k < 4; ++k) {
                 cv::line(debug_frame, pixelPoint(corners[k] * scale), pixelPoint(corners[(k+1)%4] * scale), cv::Scalar(0, 255, 0), 1, cv::LINE_AA);
             }
-        // ================= 【新增：Yaw值可视化】 =================
-            char yaw_text[50];
-            // 格式化字符串，保留2位小数
-            snprintf(yaw_text, sizeof(yaw_text), "Yaw: %.2f deg", tx_data.yaw);
+        // ================= 【可视化：XYZ + Yaw + v_x】 =================
+            char text_buffer[128];
             
-            // 在画面左上角（坐标 20, 40）用黄色（0, 255, 255）显示
-            cv::putText(debug_frame, yaw_text, cv::Point(20, 40), 
-                        cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(0, 255, 255), 2);
+            // 1. 打印 XYZ 数据
+            snprintf(text_buffer, sizeof(text_buffer), "X: %.1f mm  Y: %.1f mm  Z: %.1f mm", 
+                     tx_data.x_err, tx_data.y_err, tx_data.z_dist);
+            cv::putText(debug_frame, text_buffer, cv::Point(20, 40), 
+                        cv::FONT_HERSHEY_SIMPLEX, 0.6, cv::Scalar(255, 255, 0), 2); // 青色
             
-            // （可选）如果 yaw 偏离较大，用红色提示，方便你测试航向保持是否生效
+            // 2. 打印 Yaw 数据
+            snprintf(text_buffer, sizeof(text_buffer), "Yaw: %.2f deg", tx_data.yaw);
+            cv::putText(debug_frame, text_buffer, cv::Point(20, 70), 
+                        cv::FONT_HERSHEY_SIMPLEX, 0.6, cv::Scalar(0, 255, 255), 2); // 黄色
+            
+            // 3. 打印 v_x 速度数据
+            snprintf(text_buffer, sizeof(text_buffer), "v_x: %.2f mm/s", tx_data.v_x);
+            cv::putText(debug_frame, text_buffer, cv::Point(20, 100), 
+                        cv::FONT_HERSHEY_SIMPLEX, 0.6, cv::Scalar(255, 0, 255), 2); // 紫色
+            
+            // 4. Yaw 异常警告
             if (std::abs(tx_data.yaw) > 3.0f) {
-                cv::putText(debug_frame, "WARNING: Yaw Drift!", cv::Point(20, 70), 
-                            cv::FONT_HERSHEY_SIMPLEX, 0.6, cv::Scalar(0, 0, 255), 2);
+                cv::putText(debug_frame, "WARNING: Yaw Drift!", cv::Point(20, 130), 
+                            cv::FONT_HERSHEY_SIMPLEX, 0.6, cv::Scalar(0, 0, 255), 2); // 红色
             }
-            // ========================================================    
+            // ==========================================================   
         } else if (tx_data.target_type == 2) {
             cv::putText(debug_frame, "EXIT TAG FOUND", cv::Point(20, 40), cv::FONT_HERSHEY_SIMPLEX, 0.8, cv::Scalar(255, 0, 0), 2);
         }
