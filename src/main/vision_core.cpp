@@ -124,24 +124,56 @@ bool detectExchangeBoard(cv::Mat& frame, VisionToControl& tx_data, std::array<cv
 }
 
 // 内部函数：找退出 Tag
-bool detectExitTag(cv::Mat& frame, VisionToControl& tx_data) {
+// 修改函数签名，增加 corners 参数
+// 添加tag的pnp测距解算，保证串口数据单位统一为毫米
+bool detectExitTag(cv::Mat& frame, VisionToControl& tx_data, std::array<cv::Point2f, 4>& corners) {
     cv::Mat gray;
     cv::cvtColor(frame, gray, cv::COLOR_BGR2GRAY);
+    
     cv::Ptr<cv::aruco::Dictionary> dictionary = cv::aruco::getPredefinedDictionary(cv::aruco::DICT_APRILTAG_36h11);
+    
+    // 使用放宽的检测参数，应对模糊
+    cv::Ptr<cv::aruco::DetectorParameters> params = cv::aruco::DetectorParameters::create();
+    params->adaptiveThreshWinSizeMin = 3;
+    params->adaptiveThreshWinSizeMax = 53;
+    params->polygonalApproxAccuracyRate = 0.08; // 放宽多边形逼近，抗模糊
+    params->errorCorrectionRate = 0.6; // 提高纠错率
+
     std::vector<int> ids;
-    std::vector<std::vector<cv::Point2f>> corners;
-    cv::aruco::detectMarkers(gray, dictionary, corners, ids);
+    std::vector<std::vector<cv::Point2f>> aruco_corners;
+    
+    cv::aruco::detectMarkers(gray, dictionary, aruco_corners, ids, params);
     
     if (!ids.empty()) {
         tx_data.target_type = 2;
-        cv::Point2f center(0, 0);
-        for (const auto& p : corners[0]) center += p;
-        center /= 4.0f;
-        // 这里发送的是基于图像中心的像素偏差，电控只做对正，不需要物理毫米距离
-        tx_data.x_err = center.x - (frame.cols / 2.0f);
-        tx_data.y_err = center.y - (frame.rows / 2.0f);
-        tx_data.z_dist = 100000.0f / cv::contourArea(corners[0]);
-        tx_data.yaw = 0; tx_data.v_x = 0;
+        
+        // 将 Tag 角点传给外部，方便画框
+        for (int k = 0; k < 4; ++k) {
+            corners[k] = aruco_corners[0][k];
+        }
+
+        // === 用 ArUco 官方接口解算位姿 ===
+        cv::Mat camera_matrix = (cv::Mat_<double>(3, 3) << 1820.23, 0, 1236.55, 0, 1773.26, 916.15, 0, 0, 1);
+        cv::Mat dist_coeffs = (cv::Mat_<double>(1, 5) << -0.119, 1.043, -0.007, -0.001, -3.627);
+        
+        std::vector<cv::Vec3d> rvecs, tvecs;
+        // 注意：这里的物理尺寸填的是全宽/全高，比如 52.0f (如果 half_size=26.0f)
+        float tag_full_size = 52.0f; 
+        
+        // ArUco 官方函数：自动处理坐标系和点序
+        cv::aruco::estimatePoseSingleMarkers(aruco_corners, tag_full_size, camera_matrix, dist_coeffs, rvecs, tvecs);
+        
+        if (!rvecs.empty()) {
+            // ArUco 返回的 tvecs[0] 是一个 cv::Vec3d (3个double组成的向量)
+            tx_data.x_err = tvecs[0][0]; 
+            tx_data.y_err = tvecs[0][1]; 
+            tx_data.z_dist = tvecs[0][2]; 
+            
+            cv::Mat R;
+            cv::Rodrigues(rvecs[0], R);
+            tx_data.yaw = std::atan2(R.at<double>(0, 2), R.at<double>(2, 2)) * (180.0 / CV_PI);
+        }
+        tx_data.v_x = 0;
         return true;
     }
     return false;
@@ -172,7 +204,7 @@ FrameResult processFrame(cv::Mat& frame, SerialPort& serial, int current_mode) {
     if (current_mode == 1) {
         detected = detectExchangeBoard(frame, tx_data, corners);
     } else if (current_mode == 2) {
-        detected = detectExitTag(frame, tx_data);
+        detected = detectExitTag(frame, tx_data,corners);
     }
 
     // ================= 【可视化准备】 =================
@@ -242,6 +274,33 @@ FrameResult processFrame(cv::Mat& frame, SerialPort& serial, int current_mode) {
             // ==========================================================   
         } else if (tx_data.target_type == 2) {
             cv::putText(debug_frame, "EXIT TAG FOUND", cv::Point(20, 40), cv::FONT_HERSHEY_SIMPLEX, 0.8, cv::Scalar(255, 0, 0), 2);
+        // 【新增】：把识别到的 Tag 用黄框画出来
+            for (int k = 0; k < 4; ++k) {
+                cv::line(debug_frame, pixelPoint(corners[k] * scale), pixelPoint(corners[(k+1)%4] * scale), cv::Scalar(0, 255, 255), 2, cv::LINE_AA);
+            }
+        // 2. 打印 Tag 的状态与物理偏差数据
+            char text_buffer[128];
+            
+            // 只显示 X 和 Z（因为对位主要看 X，后退看 Z）
+            snprintf(text_buffer, sizeof(text_buffer), "TAG | X: %.1f mm  Z: %.1f mm", 
+                     tx_data.x_err, tx_data.z_dist);
+            cv::putText(debug_frame, text_buffer, cv::Point(20, 40), 
+                        cv::FONT_HERSHEY_SIMPLEX, 0.6, cv::Scalar(0, 255, 0), 2); // 绿色
+
+            // 3. 判断是否已经对正
+            if (std::abs(tx_data.x_err) < 15.0f) {
+                cv::putText(debug_frame, "ALIGNED - READY TO BACK UP", cv::Point(20, 70), 
+                            cv::FONT_HERSHEY_SIMPLEX, 0.6, cv::Scalar(255, 255, 0), 2); // 青色
+            } else {
+                cv::putText(debug_frame, "ALIGNING...", cv::Point(20, 70), 
+                            cv::FONT_HERSHEY_SIMPLEX, 0.6, cv::Scalar(0, 0, 255), 2); // 红色
+            }
+
+            // 4. 在画面正中心画一个白色的“十字准星”，方便肉眼对正
+            cv::line(debug_frame, cv::Point(debug_frame.cols/2, debug_frame.rows/2 - 20), 
+                     cv::Point(debug_frame.cols/2, debug_frame.rows/2 + 20), cv::Scalar(255, 255, 255), 1);
+            cv::line(debug_frame, cv::Point(debug_frame.cols/2 - 20, debug_frame.rows/2), 
+                     cv::Point(debug_frame.cols/2 + 20, debug_frame.rows/2), cv::Scalar(255, 255, 255), 1);
         }
 #endif
 
